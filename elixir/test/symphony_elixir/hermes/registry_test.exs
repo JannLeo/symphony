@@ -57,6 +57,19 @@ defmodule SymphonyElixir.Hermes.RegistryTest do
     def status(_ip, _opts), do: {:ok, %{state: "busy", current_task: %{id: "running"}}}
   end
 
+  defmodule ExplicitNotReadyClientStub do
+    def health("100.112.35.71", _opts), do: {:ok, %{version: "0.1.0", node_id: "not-ready-node"}}
+    def health("100.112.35.72", _opts), do: {:error, %{code: "offline", message: "offline"}}
+
+    def status("100.112.35.71", _opts), do: {:ok, %{ready: false, current_task: nil}}
+    def status("100.112.35.72", _opts), do: {:error, %{code: "offline", message: "offline"}}
+
+    def submit_task(ip, task, opts) do
+      send(Keyword.fetch!(opts, :parent), {:submitted, ip, task})
+      {:ok, %{task_id: "task-for-#{ip}", state: "queued"}}
+    end
+  end
+
   defmodule StatusFailureClientStub do
     def health(_ip, _opts), do: {:ok, %{version: "0.1.0", node_id: "status-failed-node"}}
     def status(_ip, _opts), do: {:error, %{code: "status_timeout", message: "status timed out"}}
@@ -120,6 +133,31 @@ defmodule SymphonyElixir.Hermes.RegistryTest do
     assert counts.online == 1
     assert counts.hermes_ready == 0
     assert counts.busy == 2
+  end
+
+  test "submit_task does not send to a node with explicit ready false status" do
+    {:ok, pid} =
+      Registry.start_link(
+        name: nil,
+        discovery: DiscoveryStub,
+        client: ExplicitNotReadyClientStub,
+        client_opts: [parent: self()],
+        refresh_interval_ms: false
+      )
+
+    assert :ok = Registry.refresh(pid)
+    assert %{nodes: [node_1, _offline], counts: counts} = Registry.snapshot(pid)
+
+    assert node_1.hermes.available == true
+    assert node_1.hermes.ready == false
+    assert node_1.hermes.current_task == nil
+    assert counts.hermes_ready == 0
+
+    task = %{title: "Inspect", prompt: "Check the repo"}
+    assert %{results: results} = Registry.submit_task(pid, ["node-1"], task)
+
+    assert results["node-1"] == {:error, %{code: "not_ready", message: "Node is not Hermes-ready"}}
+    refute_receive {:submitted, _ip, _task}, 20
   end
 
   test "submit_task sends only to requested Hermes-ready node IDs and returns per-node results" do

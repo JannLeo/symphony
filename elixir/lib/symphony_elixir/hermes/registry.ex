@@ -130,15 +130,16 @@ defmodule SymphonyElixir.Hermes.Registry do
         case client.status(ip, client_opts) do
           {:ok, status} ->
             state = Map.get(status, :state) || Map.get(status, "state")
+            current_task = Map.get(status, :current_task) || Map.get(status, "current_task")
 
             %{
               available: true,
-              ready: ready_state?(state),
+              ready: ready?(status, state, current_task),
               busy: busy_state?(state),
               version: Map.get(health, :version),
               node_id: Map.get(health, :node_id),
               state: state,
-              current_task: Map.get(status, :current_task) || Map.get(status, "current_task"),
+              current_task: current_task,
               error: nil
             }
 
@@ -232,6 +233,22 @@ defmodule SymphonyElixir.Hermes.Registry do
 
   defp hermes_unavailable(error) do
     %{available: false, ready: false, busy: false, error: normalize_error(error)}
+  end
+
+  defp ready?(status, state, current_task) do
+    case explicit_ready(status) do
+      {:ok, false} -> false
+      {:ok, true} -> ready_state?(state) and is_nil(current_task)
+      :error -> ready_state?(state)
+    end
+  end
+
+  defp explicit_ready(status) do
+    cond do
+      Map.has_key?(status, :ready) -> {:ok, Map.get(status, :ready)}
+      Map.has_key?(status, "ready") -> {:ok, Map.get(status, "ready")}
+      true -> :error
+    end
   end
 
   defp ready_state?(state), do: state in [nil, "idle", :idle, "ready", :ready]
