@@ -8,6 +8,8 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentRunner, Config, DryRunner, StatusDashboard, Tracker, Workspace}
+  # Issue struct: use Linear.Issue (same field names as GitHubIssues.Issue, both have
+  # assigned_to_worker: true for routable issues — guards work on both).
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -778,12 +780,18 @@ defmodule SymphonyElixir.Orchestrator do
     active_states = active_state_set()
     terminal_states = terminal_state_set()
 
+    # Debug file write (survives LiveDashboard overwriting)
+    :ok = File.write("/tmp/symphony_debug.txt", "choose_issues called with #{length(issues)} issues\n", [:append])
     issues
     |> sort_issues_for_dispatch()
     |> Enum.reduce(state, fn issue, state_acc ->
+      :ok = File.write("/tmp/symphony_debug.txt", "  checking issue #{issue.id}: #{issue.title}\n", [:append])
       if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
+        :ok = File.write("/tmp/symphony_debug.txt", "    -> DISPATCHING issue #{issue.id}\n", [:append])
         dispatch_issue(state_acc, issue)
       else
+        :ok = File.write("/tmp/symphony_debug.txt", "    -> SKIPPED issue #{issue.id}\n", [:append])
+        :ok = File.write("/tmp/symphony_debug.txt", "      reason: candidate=#{candidate_issue?(issue, active_states, terminal_states)} blocked=#{todo_issue_blocked_by_non_terminal?(issue, terminal_states)} claimed=#{MapSet.member?(state_acc.claimed, issue.id)} running=#{Map.has_key?(state_acc.running, issue.id)} blocked_state=#{Map.has_key?(state_acc.blocked, issue.id)} slots=#{available_slots(state_acc) > 0} state_slots=#{state_slots_available?(issue, state_acc.running)} worker=#{worker_slots_available?(state_acc)}\n", [:append])
         state_acc
       end
     end)
@@ -791,7 +799,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp sort_issues_for_dispatch(issues) when is_list(issues) do
     Enum.sort_by(issues, fn
-      %Issue{} = issue ->
+      issue when is_map(issue) ->
         {priority_rank(issue.priority), issue_created_at_sort_key(issue), issue.identifier || issue.id || ""}
 
       _ ->
@@ -802,19 +810,20 @@ defmodule SymphonyElixir.Orchestrator do
   defp priority_rank(priority) when is_integer(priority) and priority in 1..4, do: priority
   defp priority_rank(_priority), do: 5
 
-  defp issue_created_at_sort_key(%Issue{created_at: %DateTime{} = created_at}) do
+  defp issue_created_at_sort_key(%{created_at: %DateTime{} = created_at}) do
     DateTime.to_unix(created_at, :microsecond)
   end
 
-  defp issue_created_at_sort_key(%Issue{}), do: 9_223_372_036_854_775_807
   defp issue_created_at_sort_key(_issue), do: 9_223_372_036_854_775_807
 
+  # Guard-based: accepts both Linear.Issue and GitHubIssues.Issue
   defp should_dispatch_issue?(
-         %Issue{} = issue,
+         issue,
          %State{running: running, claimed: claimed, blocked: blocked} = state,
          active_states,
          terminal_states
-       ) do
+       )
+       when is_map(issue) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
       !MapSet.member?(claimed, issue.id) and
@@ -827,7 +836,9 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
 
-  defp state_slots_available?(%Issue{state: issue_state}, running) when is_map(running) do
+  # Accept both Linear.Issue and GitHubIssues.Issue via map key pattern match
+  defp state_slots_available?(issue, running) when is_map(running) and is_map(issue) do
+    issue_state = issue.state
     limit = Config.max_concurrent_agents_for_state(issue_state)
     used = running_issue_count_for_state(running, issue_state)
     limit > used
@@ -839,7 +850,7 @@ defmodule SymphonyElixir.Orchestrator do
     normalized_state = normalize_issue_state(issue_state)
 
     Enum.count(running, fn
-      {_id, %{issue: %Issue{state: state_name}}} ->
+      {_id, %{issue: %{state: state_name}}} ->
         normalize_issue_state(state_name) == normalized_state
 
       _ ->
@@ -847,35 +858,44 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
+  # Accept both Linear.Issue and GitHubIssues.Issue via map key access
   defp candidate_issue?(
-         %Issue{
-           id: id,
-           identifier: identifier,
-           title: title,
-           state: state_name
-         } = issue,
+         issue,
          active_states,
          terminal_states
        )
-       when is_binary(id) and is_binary(identifier) and is_binary(title) and is_binary(state_name) do
-    issue_routable?(issue) and
+       when is_map(issue) do
+    id = issue.id
+    identifier = issue.identifier
+    title = issue.title
+    state_name = issue.state
+
+    is_binary(id) and is_binary(identifier) and is_binary(title) and is_binary(state_name) and
+      issue_routable?(issue) and
       active_issue_state?(state_name, active_states) and
       !terminal_issue_state?(state_name, terminal_states)
   end
 
   defp candidate_issue?(_issue, _active_states, _terminal_states), do: false
 
-  defp issue_routable?(%Issue{} = issue) do
+  defp issue_routable?(issue) when is_map(issue) do
+    # Both Linear.Issue (assigned_to_worker: false) and GitHubIssues.Issue (assigned_to_worker: true)
+    # use Issue.routable?/2. GitHubIssues.Issue always returns true.
+    # Linear issues check assigned_to_worker.
+    # For safety, accept both via dynamic field access.
     Issue.routable?(issue, Config.settings!().tracker.required_labels)
   end
 
   defp todo_issue_blocked_by_non_terminal?(
-         %Issue{state: issue_state, blocked_by: blockers},
+         issue,
          terminal_states
        )
-       when is_binary(issue_state) and is_list(blockers) do
+       when is_map(issue) do
+    issue_state = issue.state
+    blockers = issue.blocked_by
+
     normalize_issue_state(issue_state) == "todo" and
-      Enum.any?(blockers, fn
+      Enum.any?(blockers || [], fn
         %{state: blocker_state} when is_binary(blocker_state) ->
           !terminal_issue_state?(blocker_state, terminal_states)
 

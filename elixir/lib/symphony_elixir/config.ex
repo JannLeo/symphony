@@ -51,12 +51,14 @@ defmodule SymphonyElixir.Config do
   @spec max_concurrent_agents_for_state(term()) :: pos_integer()
   def max_concurrent_agents_for_state(state_name) when is_binary(state_name) do
     config = settings!()
-
-    Map.get(
+    limit = Map.get(
       config.agent.max_concurrent_agents_by_state,
       Schema.normalize_issue_state(state_name),
       config.agent.max_concurrent_agents
     )
+    # Debug: write to file
+    :ok = File.write("/tmp/symphony_config_debug.txt", "max_concurrent_agents_for_state(#{state_name}): by_state=#{inspect(config.agent.max_concurrent_agents_by_state)} default=#{config.agent.max_concurrent_agents} -> limit=#{limit}\n", [:append])
+    limit
   end
 
   def max_concurrent_agents_for_state(_state_name), do: settings!().agent.max_concurrent_agents

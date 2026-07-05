@@ -16,7 +16,7 @@ defmodule SymphonyElixir.GitHubIssues.Client do
   @doc "List issues with given labels (open state only)"
   @spec list_issues_with_labels(String.t(), String.t(), [String.t()]) :: {:ok, [map()]} | {:error, term()}
   def list_issues_with_labels(token, repo, labels) when is_binary(token) and is_binary(repo) do
-    # Keyword list for req 0.5.17+ compatibility (map params deprecated)
+    :ok = File.write("/tmp/symphony_debug.txt", "  list_issues_with_labels: token_len=#{byte_size(token)} repo=#{repo} labels=#{inspect(labels)}\n", [:append])
     params = [labels: Enum.join(labels, ","), state: "open", per_page: 50]
     url = "#{@api_base}/repos/#{repo}/issues"
     do_get(url, token, params)

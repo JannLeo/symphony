@@ -10,8 +10,13 @@ tracker:
   push_branch: false
   active_states: ["open"]
   required_labels: []
+  terminal_states: ["closed"]
 polling:
   interval_ms: 15000
+
+hooks:
+  after_create: "git clone --depth 1 https://github.com/openai/symphony .\ncd elixir && mise trust\nmise exec -- mix deps.get"
+  before_remove: "cd elixir && mise exec -- mix workspace.before_remove"
 
 ---
 

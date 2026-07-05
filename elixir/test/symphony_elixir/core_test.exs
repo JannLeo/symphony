@@ -98,8 +98,12 @@ defmodule SymphonyElixir.CoreTest do
 
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
-    assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
+    # tracker.kind: accepts linear (original) or github (Phase 1 GitHub Issues)
+    assert Map.get(tracker, "kind") in ["linear", "github"]
+    # linear-specific fields
+    if Map.get(tracker, "kind") == "linear" do
+      assert is_binary(Map.get(tracker, "project_slug"))
+    end
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
