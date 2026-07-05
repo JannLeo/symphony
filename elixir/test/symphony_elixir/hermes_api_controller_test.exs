@@ -172,6 +172,38 @@ defmodule SymphonyElixirWeb.HermesApiControllerTest do
     assert_received {:submitted_task, %{title: "Run task", prompt: "Do it"}}
   end
 
+  test "GET /api/v1/hermes/nodes returns JSON after task submission" do
+    {:ok, registry} =
+      Registry.start_link(
+        name: nil,
+        discovery: DiscoveryStub,
+        client: ClientStub,
+        client_opts: [test_pid: self()],
+        refresh_interval_ms: false
+      )
+
+    :ok = Registry.refresh(registry)
+    put_endpoint_config(:hermes_registry, registry)
+
+    post_conn =
+      conn(
+        :post,
+        "/api/v1/hermes/tasks",
+        Jason.encode!(%{target_ids: ["node-1"], title: "Run task", prompt: "Do it"})
+      )
+      |> put_req_header("content-type", "application/json")
+      |> Endpoint.call([])
+
+    assert post_conn.status == 202
+
+    get_conn = conn(:get, "/api/v1/hermes/nodes") |> Router.call([])
+
+    assert get_conn.status == 200
+
+    assert %{"last_submission" => %{"results" => %{"node-1" => %{"task_id" => "task-1"}}}} =
+             Jason.decode!(get_conn.resp_body)
+  end
+
   defp put_endpoint_config(key, value) do
     config = Application.get_env(:symphony_elixir, Endpoint, [])
     Application.put_env(:symphony_elixir, Endpoint, Keyword.put(config, key, value))

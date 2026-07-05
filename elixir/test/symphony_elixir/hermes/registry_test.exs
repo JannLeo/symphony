@@ -182,8 +182,49 @@ defmodule SymphonyElixir.Hermes.RegistryTest do
     assert_receive {:submitted, "100.112.35.71", ^task}
     refute_receive {:submitted, "100.112.35.72", _task}, 20
 
-    assert %{last_submission: %{target_ids: ["node-1", "node-2", "missing"], results: ^results}} =
-             Registry.snapshot(pid)
+    assert %{
+             last_submission: %{
+               target_ids: ["node-1", "node-2", "missing"],
+               results: snapshot_results
+             }
+           } = Registry.snapshot(pid)
+
+    assert snapshot_results["node-1"] == %{
+             node_id: "node-1",
+             ok: true,
+             task_id: "task-for-100.112.35.71",
+             state: "queued"
+           }
+
+    assert snapshot_results["node-2"] == %{
+             node_id: "node-2",
+             ok: false,
+             error: %{code: "not_ready", message: "Node is not Hermes-ready"}
+           }
+
+    assert snapshot_results["missing"] == %{
+             node_id: "missing",
+             ok: false,
+             error: %{code: "not_found", message: "Node was not found"}
+           }
+  end
+
+  test "snapshot is JSON encodable after submit_task" do
+    {:ok, pid} =
+      Registry.start_link(
+        name: nil,
+        discovery: DiscoveryStub,
+        client: ClientStub,
+        client_opts: [parent: self()],
+        refresh_interval_ms: false
+      )
+
+    assert :ok = Registry.refresh(pid)
+
+    task = %{title: "Inspect", prompt: "Check the repo"}
+    assert %{results: _results} = Registry.submit_task(pid, ["node-1", "node-2", "missing"], task)
+
+    assert {:ok, _json} = Jason.encode(Registry.snapshot(pid))
   end
 
   test "submit_task deduplicates target IDs before sending" do
@@ -205,7 +246,16 @@ defmodule SymphonyElixir.Hermes.RegistryTest do
     assert_receive {:submitted, "100.112.35.71", ^task}
     refute_receive {:submitted, "100.112.35.71", ^task}, 20
 
-    assert %{last_submission: %{target_ids: ["node-1"], results: ^results}} = Registry.snapshot(pid)
+    assert %{last_submission: %{target_ids: ["node-1"], results: snapshot_results}} = Registry.snapshot(pid)
+
+    assert snapshot_results == %{
+             "node-1" => %{
+               node_id: "node-1",
+               ok: true,
+               task_id: "task-for-100.112.35.71",
+               state: "queued"
+             }
+           }
   end
 
   test "submit_task does not send to a node when status probing fails" do

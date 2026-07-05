@@ -185,7 +185,7 @@ defmodule SymphonyElixir.Hermes.Registry do
       generated_at: now_iso8601(),
       target_ids: target_ids,
       task: task,
-      results: results
+      results: normalize_submission_results(results)
     }
 
     reply = %{submitted_at: submission.generated_at, results: results}
@@ -206,6 +206,24 @@ defmodule SymphonyElixir.Hermes.Registry do
 
   defp submit_to_target(_node, _state, _task) do
     {:error, %{code: "not_ready", message: "Node is not Hermes-ready"}}
+  end
+
+  defp normalize_submission_results(results) do
+    Map.new(results, fn {target_id, result} -> {target_id, normalize_submission_result(target_id, result)} end)
+  end
+
+  defp normalize_submission_result(target_id, {:ok, result}) when is_map(result) do
+    result
+    |> Map.put(:node_id, target_id)
+    |> Map.put(:ok, true)
+  end
+
+  defp normalize_submission_result(target_id, {:error, error}) do
+    %{node_id: target_id, ok: false, error: normalize_error(error)}
+  end
+
+  defp normalize_submission_result(target_id, result) do
+    %{node_id: target_id, ok: false, error: normalize_error(result)}
   end
 
   defp new_snapshot(nodes) do
