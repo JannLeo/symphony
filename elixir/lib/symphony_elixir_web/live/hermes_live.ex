@@ -7,13 +7,17 @@ defmodule SymphonyElixirWeb.HermesLive do
 
   alias Phoenix.LiveView.Socket
   alias SymphonyElixir.Hermes.Registry
-  alias SymphonyElixirWeb.Endpoint
+  alias SymphonyElixirWeb.{Endpoint, HermesPubSub}
 
   @type snapshot_result :: {:ok, map()} | {:error, map()}
 
   @impl true
   @spec mount(map(), map(), Socket.t()) :: {:ok, Socket.t()}
   def mount(_params, _session, socket) do
+    if connected?(socket) do
+      :ok = HermesPubSub.subscribe()
+    end
+
     {:ok,
      socket
      |> assign(:snapshot_result, load_snapshot())
@@ -21,6 +25,12 @@ defmodule SymphonyElixirWeb.HermesLive do
      |> assign(:selected_target_ids, [])
      |> assign(:validation_error, nil)
      |> assign(:submission_result, nil)}
+  end
+
+  @impl true
+  @spec handle_info(:hermes_registry_updated, Socket.t()) :: {:noreply, Socket.t()}
+  def handle_info(:hermes_registry_updated, socket) do
+    {:noreply, assign(socket, :snapshot_result, load_snapshot())}
   end
 
   @impl true
@@ -328,6 +338,7 @@ defmodule SymphonyElixirWeb.HermesLive do
     |> Map.get("target_ids", [])
     |> List.wrap()
     |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+    |> Enum.uniq()
   end
 
   @spec validate_submission(snapshot_result(), [String.t()], map()) :: {:ok, [String.t()], map()} | {:error, String.t()}

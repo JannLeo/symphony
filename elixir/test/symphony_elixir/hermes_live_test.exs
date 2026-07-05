@@ -41,6 +41,14 @@ defmodule SymphonyElixirWeb.HermesLiveTest do
     end
   end
 
+  defmodule DiscoverySequenceStub do
+    def discover(opts) do
+      opts
+      |> Keyword.fetch!(:agent)
+      |> Agent.get_and_update(fn [result | rest] -> {result, rest} end)
+    end
+  end
+
   defmodule ClientStub do
     def health("100.112.35.71", _opts), do: {:ok, %{version: "0.1.0", node_id: "szserver"}}
     def health("100.64.0.2", _opts), do: {:error, %{code: "refused", message: "connection refused"}}
@@ -115,6 +123,41 @@ defmodule SymphonyElixirWeb.HermesLiveTest do
     assert_received {:submitted_task, %{title: "Collect logs", prompt: "Run diagnostics", priority: "normal"}}
   end
 
+  test "Hermes board reloads when registry broadcasts an update" do
+    {:ok, agent} =
+      Agent.start_link(fn ->
+        [EmptyDiscovery.discover([]), ReadyDiscovery.discover([])]
+      end)
+
+    registry = start_registry!(DiscoverySequenceStub, discovery_opts: [agent: agent])
+
+    {:ok, view, html} = live(Phoenix.ConnTest.build_conn(), "/hermes")
+
+    assert html =~ "No Tailscale devices found"
+
+    :ok = Registry.refresh(registry)
+
+    assert render(view) =~ "szserver"
+  end
+
+  test "duplicate selected targets submit only once" do
+    start_registry!(ReadyDiscovery)
+
+    {:ok, view, _html} = live(Phoenix.ConnTest.build_conn(), "/hermes")
+
+    result =
+      view
+      |> form("#hermes-task-form", %{
+        "task" => %{"title" => "Collect logs", "prompt" => "Run diagnostics", "priority" => "normal"},
+        "target_ids" => ["node-1", "node-1"]
+      })
+      |> render_submit()
+
+    assert result =~ "Delivery results"
+    assert_received {:submitted_task, %{title: "Collect logs", prompt: "Run diagnostics", priority: "normal"}}
+    refute_receive {:submitted_task, _task}, 20
+  end
+
   test "submit with no ready target shows validation error" do
     start_registry!(EmptyDiscovery)
 
@@ -128,11 +171,12 @@ defmodule SymphonyElixirWeb.HermesLiveTest do
     assert result =~ "Select at least one Hermes-ready node."
   end
 
-  defp start_registry!(discovery) do
+  defp start_registry!(discovery, opts \\ []) do
     {:ok, registry} =
       Registry.start_link(
         name: nil,
         discovery: discovery,
+        discovery_opts: Keyword.get(opts, :discovery_opts, []),
         client: ClientStub,
         client_opts: [test_pid: self()],
         refresh_interval_ms: false

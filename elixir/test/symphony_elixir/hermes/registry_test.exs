@@ -186,6 +186,28 @@ defmodule SymphonyElixir.Hermes.RegistryTest do
              Registry.snapshot(pid)
   end
 
+  test "submit_task deduplicates target IDs before sending" do
+    {:ok, pid} =
+      Registry.start_link(
+        name: nil,
+        discovery: DiscoveryStub,
+        client: ClientStub,
+        client_opts: [parent: self()],
+        refresh_interval_ms: false
+      )
+
+    assert :ok = Registry.refresh(pid)
+
+    task = %{title: "Inspect", prompt: "Check the repo"}
+    assert %{results: results} = Registry.submit_task(pid, ["node-1", "node-1"], task)
+
+    assert results == %{"node-1" => {:ok, %{task_id: "task-for-100.112.35.71", state: "queued"}}}
+    assert_receive {:submitted, "100.112.35.71", ^task}
+    refute_receive {:submitted, "100.112.35.71", ^task}, 20
+
+    assert %{last_submission: %{target_ids: ["node-1"], results: ^results}} = Registry.snapshot(pid)
+  end
+
   test "submit_task does not send to a node when status probing fails" do
     {:ok, pid} =
       Registry.start_link(

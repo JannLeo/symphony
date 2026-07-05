@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Hermes.Registry do
 
   alias SymphonyElixir.Hermes.Client
   alias SymphonyElixir.Hermes.Tailscale
+  alias SymphonyElixirWeb.HermesPubSub
 
   @default_refresh_interval_ms 10_000
   @default_port 8765
@@ -75,7 +76,7 @@ defmodule SymphonyElixir.Hermes.Registry do
   end
 
   def handle_call(:refresh, _from, state) do
-    {:reply, :ok, do_refresh(state)}
+    {:reply, :ok, do_refresh(state, broadcast?: true)}
   end
 
   def handle_call({:submit_task, target_ids, task}, _from, state) do
@@ -86,13 +87,15 @@ defmodule SymphonyElixir.Hermes.Registry do
 
   @impl true
   def handle_info(:refresh, state) do
-    next_state = do_refresh(state)
+    next_state = do_refresh(state, broadcast?: true)
     schedule_refresh(next_state.refresh_interval_ms)
 
     {:noreply, next_state}
   end
 
-  defp do_refresh(state) do
+  defp do_refresh(state, opts) do
+    broadcast? = Keyword.get(opts, :broadcast?, false)
+
     case state.discovery.discover(state.discovery_opts) do
       {:ok, nodes} ->
         snapshot =
@@ -100,9 +103,13 @@ defmodule SymphonyElixir.Hermes.Registry do
           |> probe_nodes(state)
           |> new_snapshot()
 
+        if broadcast?, do: HermesPubSub.broadcast_update()
+
         %{state | snapshot: %{snapshot | last_submission: state.snapshot.last_submission}}
 
       {:error, error} ->
+        if broadcast?, do: HermesPubSub.broadcast_update()
+
         %{state | snapshot: %{state.snapshot | generated_at: now_iso8601(), error: normalize_error(error)}}
     end
   end
@@ -166,6 +173,7 @@ defmodule SymphonyElixir.Hermes.Registry do
   end
 
   defp do_submit_task(state, target_ids, task) do
+    target_ids = Enum.uniq(target_ids)
     nodes_by_id = Map.new(state.snapshot.nodes, &{&1.id, &1})
 
     results =
@@ -182,6 +190,8 @@ defmodule SymphonyElixir.Hermes.Registry do
 
     reply = %{submitted_at: submission.generated_at, results: results}
     next_state = %{state | snapshot: %{state.snapshot | last_submission: submission}}
+
+    HermesPubSub.broadcast_update()
 
     {reply, next_state}
   end
