@@ -31,6 +31,7 @@ defmodule SymphonyElixir.GitHubIssues.Adapter do
   @label_agent_blocked "agent-blocked"
   @label_agent_done "agent-done"
   @label_agent_failed "agent-failed"
+  @label_agent_smoke_ok "agent-smoke-ok"
 
   # ─────────────────────────────────────────────────────────────────────────
   # Tracker behaviour callbacks
@@ -183,9 +184,9 @@ defmodule SymphonyElixir.GitHubIssues.Adapter do
     end
   end
 
-  @doc "Mark issue as failed: remove agent-running, add agent-failed, write error comment"
-  @spec mark_failed(String.t(), String.t()) :: :ok | {:error, term()}
-  def mark_failed(issue_id, error_message) when is_binary(issue_id) do
+  @doc "Mark issue as failed: remove agent-running, add agent-failed, write error comment."
+  @spec mark_failed(String.t(), String.t()) :: :ok
+  def mark_failed(issue_id, error_message) when is_binary(issue_id) and is_binary(error_message) do
     settings = Config.settings!()
     token = settings.tracker.github_token
     repo = settings.tracker.github_repo
@@ -209,5 +210,18 @@ defmodule SymphonyElixir.GitHubIssues.Adapter do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  @doc "Mark issue smoke test passed: remove agent-running, add agent-smoke-ok."
+  @spec mark_smoke_ok(String.t()) :: :ok
+  def mark_smoke_ok(issue_id) when is_binary(issue_id) do
+    settings = Config.settings!()
+    token = settings.tracker.github_token
+    repo = settings.tracker.github_repo
+
+    _ = Client.remove_label(token, repo, issue_id, @label_agent_running)
+    _ = Client.add_labels(token, repo, issue_id, [@label_agent_smoke_ok])
+
+    :ok
   end
 end
