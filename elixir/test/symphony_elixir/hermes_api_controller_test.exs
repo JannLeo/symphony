@@ -37,6 +37,7 @@ defmodule SymphonyElixirWeb.HermesApiControllerTest do
 
   setup do
     endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
+    start_supervised!(Endpoint)
 
     on_exit(fn ->
       Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
@@ -53,22 +54,95 @@ defmodule SymphonyElixirWeb.HermesApiControllerTest do
   end
 
   test "POST /api/v1/hermes/tasks requires title, prompt, and target_ids" do
-    for body <- [
-          %{},
-          %{title: "Run task", prompt: "Do it"},
-          %{title: "Run task", target_ids: ["node-1"]},
-          %{prompt: "Do it", target_ids: ["node-1"]},
-          %{title: "", prompt: "Do it", target_ids: ["node-1"]},
-          %{title: "Run task", prompt: "", target_ids: ["node-1"]},
-          %{title: "Run task", prompt: "Do it", target_ids: []}
-        ] do
+    cases = [
+      {%{}, "missing_title"},
+      {%{title: "Run task", prompt: "Do it"}, "missing_target_ids"},
+      {%{title: "Run task", target_ids: ["node-1"]}, "missing_prompt"},
+      {%{prompt: "Do it", target_ids: ["node-1"]}, "missing_title"},
+      {%{title: "", prompt: "Do it", target_ids: ["node-1"]}, "missing_title"},
+      {%{title: "Run task", prompt: "", target_ids: ["node-1"]}, "missing_prompt"},
+      {%{title: "Run task", prompt: "Do it", target_ids: []}, "missing_target_ids"}
+    ]
+
+    for {body, code} <- cases do
       conn =
         conn(:post, "/api/v1/hermes/tasks", Jason.encode!(body))
         |> put_req_header("content-type", "application/json")
-        |> Router.call([])
+        |> Endpoint.call([])
 
       assert conn.status == 400
+      assert %{"error" => %{"code" => ^code}} = Jason.decode!(conn.resp_body)
     end
+  end
+
+  test "POST /api/v1/hermes/tasks rejects malformed JSON through endpoint" do
+    conn =
+      conn(:post, "/api/v1/hermes/tasks", ~s({"title"))
+      |> put_req_header("content-type", "application/json")
+      |> Endpoint.call([])
+
+    assert conn.status == 400
+    assert %{"error" => %{"code" => "invalid_json"}} = Jason.decode!(conn.resp_body)
+  end
+
+  test "POST /api/v1/hermes/tasks rejects top-level non-object JSON" do
+    for body <- [[], ["node-1"]] do
+      conn =
+        conn(:post, "/api/v1/hermes/tasks", Jason.encode!(body))
+        |> put_req_header("content-type", "application/json")
+        |> Endpoint.call([])
+
+      assert conn.status == 400
+      assert %{"error" => %{"code" => "invalid_json"}} = Jason.decode!(conn.resp_body)
+    end
+  end
+
+  test "POST /api/v1/hermes/tasks rejects invalid target_ids" do
+    for target_ids <- ["node-1", nil, [""], ["node-1", "  "], [123], ["node-1", 123]] do
+      conn =
+        conn(:post, "/api/v1/hermes/tasks", Jason.encode!(%{target_ids: target_ids, title: "Run task", prompt: "Do it"}))
+        |> put_req_header("content-type", "application/json")
+        |> Endpoint.call([])
+
+      assert conn.status == 400
+      assert %{"error" => %{"code" => "missing_target_ids"}} = Jason.decode!(conn.resp_body)
+    end
+  end
+
+  test "unsupported Hermes API methods return method_not_allowed" do
+    for {method, path} <- [
+          {:post, "/api/v1/hermes/nodes"},
+          {:put, "/api/v1/hermes/nodes"},
+          {:get, "/api/v1/hermes/tasks"},
+          {:put, "/api/v1/hermes/tasks"},
+          {:delete, "/api/v1/hermes/tasks"}
+        ] do
+      conn = conn(method, path) |> Router.call([])
+
+      assert conn.status == 405
+      assert %{"error" => %{"code" => "method_not_allowed"}} = Jason.decode!(conn.resp_body)
+    end
+  end
+
+  test "GET /api/v1/hermes/nodes returns structured error when registry is unavailable" do
+    put_endpoint_config(:hermes_registry, :missing_hermes_registry)
+
+    conn = conn(:get, "/api/v1/hermes/nodes") |> Router.call([])
+
+    assert conn.status == 503
+    assert %{"error" => %{"code" => "registry_unavailable"}} = Jason.decode!(conn.resp_body)
+  end
+
+  test "POST /api/v1/hermes/tasks returns structured error when registry is unavailable" do
+    put_endpoint_config(:hermes_registry, :missing_hermes_registry)
+
+    conn =
+      conn(:post, "/api/v1/hermes/tasks", Jason.encode!(%{target_ids: ["node-1"], title: "Run task", prompt: "Do it"}))
+      |> put_req_header("content-type", "application/json")
+      |> Endpoint.call([])
+
+    assert conn.status == 503
+    assert %{"error" => %{"code" => "registry_unavailable"}} = Jason.decode!(conn.resp_body)
   end
 
   test "valid POST /api/v1/hermes/tasks submits task to registry" do
@@ -91,7 +165,7 @@ defmodule SymphonyElixirWeb.HermesApiControllerTest do
         Jason.encode!(%{target_ids: ["node-1"], title: "Run task", prompt: "Do it"})
       )
       |> put_req_header("content-type", "application/json")
-      |> Router.call([])
+      |> Endpoint.call([])
 
     assert conn.status == 202
     assert %{"results" => %{"node-1" => %{"task_id" => "task-1"}}} = Jason.decode!(conn.resp_body)

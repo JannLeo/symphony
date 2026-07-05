@@ -21,8 +21,8 @@ defmodule SymphonyElixirWeb.HermesApiController do
   end
 
   @spec submit_task(Conn.t(), map()) :: Conn.t()
-  def submit_task(conn, params) do
-    with {:ok, body} <- request_body(conn, params),
+  def submit_task(conn, _params) do
+    with {:ok, body} <- request_body(conn),
          {:ok, target_ids, task} <- validate_task_body(body),
          {:ok, result} <- submit(registry(), target_ids, task) do
       conn
@@ -42,37 +42,14 @@ defmodule SymphonyElixirWeb.HermesApiController do
     error_response(conn, 405, "method_not_allowed", "Method not allowed")
   end
 
-  defp request_body(conn, params) do
-    body_from_params = Map.drop(params, ["_format"])
+  defp request_body(%Conn{body_params: %{"_json" => _}}) do
+    {:error, bad_request("invalid_json", "Request body must be a JSON object")}
+  end
 
-    cond do
-      map_size(body_from_params) > 0 ->
-        {:ok, body_from_params}
+  defp request_body(%Conn{body_params: body}) when is_map(body), do: {:ok, body}
 
-      true ->
-        case Conn.read_body(conn) do
-          {:ok, "", _conn} ->
-            {:ok, %{}}
-
-          {:ok, raw_body, _conn} ->
-            case Jason.decode(raw_body) do
-              {:ok, decoded} when is_map(decoded) ->
-                {:ok, decoded}
-
-              {:ok, _decoded} ->
-                {:error, bad_request("invalid_json", "Request body must be a JSON object")}
-
-              {:error, _reason} ->
-                {:error, bad_request("invalid_json", "Request body must be valid JSON")}
-            end
-
-          {:more, _partial, _conn} ->
-            {:error, bad_request("invalid_json", "Request body is too large")}
-
-          {:error, _reason} ->
-            {:error, bad_request("invalid_json", "Could not read request body")}
-        end
-    end
+  defp request_body(_conn) do
+    {:error, bad_request("request_body_invalid", "Request body must be parsed before validation")}
   end
 
   defp validate_task_body(body) do
@@ -95,7 +72,7 @@ defmodule SymphonyElixirWeb.HermesApiController do
     end
   end
 
-  defp body_value(body, key), do: Map.get(body, key) || Map.get(body, String.to_existing_atom(key))
+  defp body_value(body, key), do: Map.get(body, key)
 
   defp blank?(value), do: not is_binary(value) or String.trim(value) == ""
 
