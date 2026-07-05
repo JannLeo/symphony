@@ -62,6 +62,9 @@ defmodule SymphonyElixir.Config.Schema do
       field(:agent_data_root, :string, default: "/models-ssd/agent-data")
       # Dry-run mode: when true, runs claim + worktree + dry-run without Codex
       field(:dry_run, :boolean, default: false)
+      # Push safety switch: when false (default), branch is created locally only.
+      # Requires AGENT_DRY_RUN=true AND AGENT_PUSH_BRANCH=true to push to remote.
+      field(:push_branch, :boolean, default: false)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -70,7 +73,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> cast(
         attrs,
         [:kind, :endpoint, :api_key, :project_slug, :assignee, :required_labels, :active_states, :terminal_states,
-         :github_repo, :github_token, :agent_name, :agent_workspace_root, :agent_data_root, :dry_run],
+         :github_repo, :github_token, :agent_name, :agent_workspace_root, :agent_data_root, :dry_run, :push_branch],
         empty_values: []
       )
       |> update_change(:required_labels, fn labels ->
@@ -392,7 +395,8 @@ defmodule SymphonyElixir.Config.Schema do
         agent_name: resolve_agent_string_setting(settings.tracker.agent_name, System.get_env("AGENT_NAME")),
         agent_workspace_root: resolve_agent_path_setting(settings.tracker.agent_workspace_root, System.get_env("AGENT_WORKSPACE_ROOT")),
         agent_data_root: resolve_agent_path_setting(settings.tracker.agent_data_root, System.get_env("AGENT_DATA_ROOT")),
-        dry_run: resolve_dry_run_setting(settings.tracker.dry_run)
+        dry_run: resolve_dry_run_setting(settings.tracker.dry_run),
+        push_branch: resolve_push_branch_setting(settings.tracker.push_branch)
     }
 
     workspace = %{
@@ -436,6 +440,16 @@ defmodule SymphonyElixir.Config.Schema do
   end
   defp resolve_dry_run_setting(value) when is_boolean(value), do: value
   defp resolve_dry_run_setting(value) when is_binary(value),
+    do: String.downcase(value) in ["true", "1", "yes"]
+
+  # Resolve push_branch from $AGENT_PUSH_BRANCH env var (string "true"/"false")
+  # Default is always false — push must be explicitly enabled.
+  defp resolve_push_branch_setting(nil) do
+    env_val = System.get_env("AGENT_PUSH_BRANCH", "false")
+    String.downcase(env_val) in ["true", "1", "yes"]
+  end
+  defp resolve_push_branch_setting(value) when is_boolean(value), do: value
+  defp resolve_push_branch_setting(value) when is_binary(value),
     do: String.downcase(value) in ["true", "1", "yes"]
 
   defp resolve_string_setting(value, fallback) do

@@ -172,7 +172,7 @@ defmodule SymphonyElixir.GitHubIssues.Adapter do
 
   @doc "Write a result comment to the issue"
   @spec write_result_comment(String.t(), map(), String.t()) :: :ok | {:error, term()}
-  def write_result_comment(issue_id, result, comment_body) when is_binary(issue_id) and is_binary(comment_body) do
+  def write_result_comment(issue_id, _result, comment_body) when is_binary(issue_id) and is_binary(comment_body) do
     settings = Config.settings!()
     token = settings.tracker.github_token
     repo = settings.tracker.github_repo
