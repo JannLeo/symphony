@@ -66,6 +66,18 @@ defmodule SymphonyElixir.Hermes.Client do
      }}
   end
 
+  def normalize_task_response(%{
+        "accepted" => false,
+        "error" => %{"code" => code, "message" => message}
+      })
+      when is_binary(code) and is_binary(message) do
+    error(code, message)
+  end
+
+  def normalize_task_response(%{"accepted" => false}) do
+    error("task_rejected", "Hermes task response was not accepted")
+  end
+
   def normalize_task_response(_payload) do
     error("task_rejected", "Hermes task response was not accepted")
   end
@@ -78,7 +90,7 @@ defmodule SymphonyElixir.Hermes.Client do
   defp timeout(opts, default), do: Keyword.get(opts, :timeout, default)
 
   defp request(url, :get, _body, timeout) do
-    Req.get(url, receive_timeout: timeout, retry: false)
+    Req.get(url, receive_timeout: timeout, retry: false, decode_body: false)
   rescue
     exception -> {:error, exception}
   catch
@@ -86,7 +98,7 @@ defmodule SymphonyElixir.Hermes.Client do
   end
 
   defp request(url, :post, body, timeout) do
-    Req.post(url, json: body, receive_timeout: timeout, retry: false)
+    Req.post(url, json: body, receive_timeout: timeout, retry: false, decode_body: false)
   rescue
     exception -> {:error, exception}
   catch
