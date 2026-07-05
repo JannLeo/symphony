@@ -83,6 +83,7 @@ defmodule SymphonyElixirWeb.HermesLive do
             <p class="hero-copy">
               Dispatch tasks to Hermes agents discovered across your Tailscale tailnet, with readiness and delivery feedback in one place.
             </p>
+            <a class="issue-link" href="/">Operations Dashboard</a>
           </div>
 
           <div class="status-stack">

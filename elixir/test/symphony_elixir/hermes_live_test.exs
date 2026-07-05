@@ -78,6 +78,8 @@ defmodule SymphonyElixirWeb.HermesLiveTest do
     {:ok, _view, html} = live(Phoenix.ConnTest.build_conn(), "/hermes")
 
     assert html =~ "Hermes Board"
+    assert html =~ ~s(href="/")
+    assert html =~ "Operations Dashboard"
     assert html =~ "Tailscale"
   end
 

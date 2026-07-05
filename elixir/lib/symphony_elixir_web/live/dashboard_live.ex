@@ -53,6 +53,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="hero-copy">
               Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
             </p>
+            <a class="issue-link" href="/hermes">Hermes Board</a>
           </div>
 
           <div class="status-stack">
