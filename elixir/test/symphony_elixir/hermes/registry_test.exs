@@ -57,6 +57,25 @@ defmodule SymphonyElixir.Hermes.RegistryTest do
     def status(_ip, _opts), do: {:ok, %{state: "busy", current_task: %{id: "running"}}}
   end
 
+  defmodule StatusFailureClientStub do
+    def health(_ip, _opts), do: {:ok, %{version: "0.1.0", node_id: "status-failed-node"}}
+    def status(_ip, _opts), do: {:error, %{code: "status_timeout", message: "status timed out"}}
+
+    def submit_task(ip, task, opts) do
+      send(Keyword.fetch!(opts, :parent), {:submitted, ip, task})
+      {:ok, %{task_id: "task-for-#{ip}", state: "queued"}}
+    end
+  end
+
+  defmodule SlowStatusClientStub do
+    def health(_ip, _opts), do: {:ok, %{version: "0.1.0", node_id: "slow-status-node"}}
+
+    def status(_ip, _opts) do
+      Process.sleep(800)
+      {:ok, %{state: "idle", current_task: nil}}
+    end
+  end
+
   test "refresh builds a snapshot with Hermes-ready nodes using injected discovery and client" do
     {:ok, pid} =
       Registry.start_link(
@@ -127,6 +146,51 @@ defmodule SymphonyElixir.Hermes.RegistryTest do
 
     assert %{last_submission: %{target_ids: ["node-1", "node-2", "missing"], results: ^results}} =
              Registry.snapshot(pid)
+  end
+
+  test "submit_task does not send to a node when status probing fails" do
+    {:ok, pid} =
+      Registry.start_link(
+        name: nil,
+        discovery: DiscoveryStub,
+        client: StatusFailureClientStub,
+        client_opts: [parent: self()],
+        refresh_interval_ms: false
+      )
+
+    assert :ok = Registry.refresh(pid)
+    assert %{nodes: [node_1, node_2], counts: counts} = Registry.snapshot(pid)
+
+    assert node_1.hermes.available == true
+    assert node_1.hermes.ready == false
+    assert node_1.hermes.error == %{code: "status_timeout", message: "status timed out"}
+    assert node_2.hermes.available == true
+    assert node_2.hermes.ready == false
+    assert counts.hermes_ready == 0
+
+    task = %{title: "Inspect", prompt: "Check the repo"}
+    assert %{results: results} = Registry.submit_task(pid, ["node-1"], task)
+
+    assert results["node-1"] == {:error, %{code: "not_ready", message: "Node is not Hermes-ready"}}
+    refute_receive {:submitted, _ip, _task}, 20
+  end
+
+  test "refresh waits long enough for health and status probing before dropping nodes" do
+    {:ok, pid} =
+      Registry.start_link(
+        name: nil,
+        discovery: DiscoveryStub,
+        client: SlowStatusClientStub,
+        probe_timeout_ms: 200,
+        refresh_interval_ms: false
+      )
+
+    assert :ok = Registry.refresh(pid)
+    assert %{nodes: [node_1, node_2], counts: counts} = Registry.snapshot(pid)
+
+    assert node_1.hermes.ready == true
+    assert node_2.hermes.ready == true
+    assert counts.hermes_ready == 2
   end
 
   test "discovery failure keeps previous good snapshot and sets an error" do

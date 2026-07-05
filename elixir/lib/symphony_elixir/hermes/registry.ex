@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Hermes.Registry do
   @default_port 8765
   @default_probe_timeout_ms 1_000
   @default_task_submit_timeout_ms 5_000
+  @default_registry_call_timeout_ms 15_000
   @default_max_probe_concurrency 8
 
   @type error :: %{code: String.t(), message: String.t()}
@@ -34,18 +35,18 @@ defmodule SymphonyElixir.Hermes.Registry do
 
   @spec snapshot(GenServer.server()) :: snapshot()
   def snapshot(server \\ __MODULE__) do
-    GenServer.call(server, :snapshot)
+    GenServer.call(server, :snapshot, @default_registry_call_timeout_ms)
   end
 
   @spec refresh(GenServer.server()) :: :ok
   def refresh(server \\ __MODULE__) do
-    GenServer.call(server, :refresh, :infinity)
+    GenServer.call(server, :refresh, @default_registry_call_timeout_ms)
   end
 
   @spec submit_task(GenServer.server(), [String.t()], map()) :: map()
   def submit_task(server \\ __MODULE__, target_ids, task)
       when is_list(target_ids) and is_map(task) do
-    GenServer.call(server, {:submit_task, target_ids, task}, :infinity)
+    GenServer.call(server, {:submit_task, target_ids, task}, @default_registry_call_timeout_ms)
   end
 
   @impl true
@@ -113,7 +114,7 @@ defmodule SymphonyElixir.Hermes.Registry do
     |> Task.async_stream(
       fn node -> Map.put(node, :hermes, probe_node(node, state.client, client_opts)) end,
       max_concurrency: state.max_probe_concurrency,
-      timeout: state.probe_timeout_ms + 500,
+      timeout: probe_stream_timeout_ms(state),
       on_timeout: :kill_task
     )
     |> Enum.map(fn
@@ -126,19 +127,33 @@ defmodule SymphonyElixir.Hermes.Registry do
   defp probe_node(%{ip: ip}, client, client_opts) when is_binary(ip) do
     case client.health(ip, client_opts) do
       {:ok, health} ->
-        status = status_for(client, ip, client_opts)
-        state = Map.get(status, :state) || Map.get(status, "state")
+        case client.status(ip, client_opts) do
+          {:ok, status} ->
+            state = Map.get(status, :state) || Map.get(status, "state")
 
-        %{
-          available: true,
-          ready: ready_state?(state),
-          busy: busy_state?(state),
-          version: Map.get(health, :version),
-          node_id: Map.get(health, :node_id),
-          state: state,
-          current_task: Map.get(status, :current_task) || Map.get(status, "current_task"),
-          error: nil
-        }
+            %{
+              available: true,
+              ready: ready_state?(state),
+              busy: busy_state?(state),
+              version: Map.get(health, :version),
+              node_id: Map.get(health, :node_id),
+              state: state,
+              current_task: Map.get(status, :current_task) || Map.get(status, "current_task"),
+              error: nil
+            }
+
+          {:error, error} ->
+            %{
+              available: true,
+              ready: false,
+              busy: false,
+              version: Map.get(health, :version),
+              node_id: Map.get(health, :node_id),
+              state: nil,
+              current_task: nil,
+              error: normalize_error(error)
+            }
+        end
 
       {:error, error} ->
         hermes_unavailable(error)
@@ -147,13 +162,6 @@ defmodule SymphonyElixir.Hermes.Registry do
 
   defp probe_node(_node, _client, _client_opts) do
     hermes_unavailable(%{code: "missing_ip", message: "Node has no Tailscale IP"})
-  end
-
-  defp status_for(client, ip, client_opts) do
-    case client.status(ip, client_opts) do
-      {:ok, status} -> status
-      {:error, _error} -> %{}
-    end
   end
 
   defp do_submit_task(state, target_ids, task) do
@@ -213,6 +221,8 @@ defmodule SymphonyElixir.Hermes.Registry do
     |> Keyword.put_new(:port, state.port)
     |> Keyword.put(:timeout, state.probe_timeout_ms)
   end
+
+  defp probe_stream_timeout_ms(state), do: state.probe_timeout_ms * 2 + 500
 
   defp submit_client_opts(state) do
     state.client_opts
