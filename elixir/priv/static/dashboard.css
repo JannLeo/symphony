@@ -420,6 +420,63 @@ pre,
   color: var(--muted);
 }
 
+.hermes-table {
+  min-width: 1040px;
+}
+
+.delivery-table {
+  min-width: 520px;
+}
+
+.target-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.target-checkbox input {
+  accent-color: var(--accent);
+}
+
+.task-form {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 1rem;
+  max-width: 52rem;
+}
+
+.field-label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.field-label input,
+.field-label textarea,
+.field-label select {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--ink);
+  font: inherit;
+  padding: 0.75rem 0.85rem;
+}
+
+.field-label textarea {
+  resize: vertical;
+}
+
+.form-error {
+  margin: 0;
+  color: var(--danger);
+  font-weight: 600;
+}
+
 .error-card {
   border-radius: 24px;
   padding: 1.25rem;
