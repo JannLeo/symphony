@@ -16,14 +16,10 @@ defmodule SymphonyElixir.GitHubIssues.Client do
   @doc "List issues with given labels (open state only)"
   @spec list_issues_with_labels(String.t(), String.t(), [String.t()]) :: {:ok, [map()]} | {:error, term()}
   def list_issues_with_labels(token, repo, labels) when is_binary(token) and is_binary(repo) do
-    params = %{
-      "labels" => Enum.join(labels, ","),
-      "state" => "open",
-      "per_page" => 50
-    }
-
+    # Keyword list for req 0.5.17+ compatibility (map params deprecated)
+    params = [labels: Enum.join(labels, ","), state: "open", per_page: 50]
     url = "#{@api_base}/repos/#{repo}/issues"
-    do_get(url, token, params: params)
+    do_get(url, token, params)
   end
 
   @doc "Get a single issue by number"
@@ -109,8 +105,9 @@ defmodule SymphonyElixir.GitHubIssues.Client do
     ]
   end
 
-  defp do_get(url, token, opts) when is_list(opts) do
-    case Req.get(url, headers: base_headers(token) |> Keyword.merge(opts)) do
+  defp do_get(url, token, params) when is_list(params) do
+    # params is a keyword list [labels: ..., state: ..., per_page: ...] — NOT merged into headers
+    case Req.get(url, headers: base_headers(token), params: params) do
       {:ok, %{status: 200, body: body}} ->
         {:ok, body}
 
@@ -121,7 +118,9 @@ defmodule SymphonyElixir.GitHubIssues.Client do
   end
 
   defp do_get(url, token, params) when is_map(params) do
-    case Req.get(url, headers: base_headers(token), params: params) do
+    # req 0.5.17 requires params as keyword list, not map
+    keyword_params = for {k, v} <- Map.to_list(params), do: {String.to_atom(k), v}
+    case Req.get(url, headers: base_headers(token), params: keyword_params) do
       {:ok, %{status: 200, body: body}} ->
         {:ok, body}
 

@@ -23,6 +23,8 @@ defmodule SymphonyElixir.GitHubIssues.Adapter do
 
   @behaviour SymphonyElixir.Tracker
 
+  require Logger
+
   alias SymphonyElixir.Config
   alias SymphonyElixir.GitHubIssues.{Client, Issue}
 
@@ -42,6 +44,8 @@ defmodule SymphonyElixir.GitHubIssues.Adapter do
     settings = Config.settings!()
     token = settings.tracker.github_token
     repo = settings.tracker.github_repo
+
+    Logger.info("GitHub Issues: fetching candidates for #{repo}, token_len=#{if is_binary(token), do: byte_size(token), else: "nil"}")
 
     case Client.list_issues_with_labels(token, repo, [@label_agent_ready]) do
       {:ok, github_issues} ->

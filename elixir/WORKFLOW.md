@@ -1,41 +1,17 @@
 ---
 tracker:
-  kind: linear
-  project_slug: "symphony-0c79b11b75ea"
+  kind: github
+  github_repo: "JannLeo/jannserver"
+  github_token: "$GITHUB_TOKEN"
+  agent_name: "hermes-server"
+  agent_workspace_root: "/models-ssd/agent-sandboxes"
+  agent_data_root: "/models-ssd/agent-data"
+  dry_run: true
+  push_branch: false
+  active_states: ["open"]
   required_labels: []
-  active_states:
-    - Todo
-    - In Progress
-    - Merging
-    - Rework
-  terminal_states:
-    - Closed
-    - Cancelled
-    - Canceled
-    - Duplicate
-    - Done
 polling:
-  interval_ms: 5000
-workspace:
-  root: ~/code/symphony-workspaces
-hooks:
-  after_create: |
-    git clone --depth 1 https://github.com/openai/symphony .
-    if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
-    fi
-  before_remove: |
-    cd elixir && mise exec -- mix workspace.before_remove
-agent:
-  max_concurrent_agents: 10
-  max_turns: 20
-codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-    networkAccess: true
+  interval_ms: 15000
 
 ---
 
