@@ -53,6 +53,18 @@ defmodule SymphonyElixir.Config.Schema do
       field(:required_labels, {:array, :string}, default: [])
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
+      # GitHub Issues adapter fields
+      field(:github_repo, :string)
+      field(:github_token, :string)
+      # Agent settings (used for GitHub Issues + dry-run mode)
+      field(:agent_name, :string, default: "hermes")
+      field(:agent_workspace_root, :string, default: "/models-ssd/agent-sandboxes")
+      field(:agent_data_root, :string, default: "/models-ssd/agent-data")
+      # Dry-run mode: when true, runs claim + worktree + dry-run without Codex
+      field(:dry_run, :boolean, default: false)
+      # Push safety switch: when false (default), branch is created locally only.
+      # Requires AGENT_DRY_RUN=true AND AGENT_PUSH_BRANCH=true to push to remote.
+      field(:push_branch, :boolean, default: false)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -60,7 +72,8 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :required_labels, :active_states, :terminal_states],
+        [:kind, :endpoint, :api_key, :project_slug, :assignee, :required_labels, :active_states, :terminal_states,
+         :github_repo, :github_token, :agent_name, :agent_workspace_root, :agent_data_root, :dry_run, :push_branch],
         empty_values: []
       )
       |> update_change(:required_labels, fn labels ->
@@ -375,7 +388,15 @@ defmodule SymphonyElixir.Config.Schema do
     tracker = %{
       settings.tracker
       | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE")),
+        # GitHub Issues fields resolved from env with fallback to raw value
+        github_repo: resolve_github_setting(settings.tracker.github_repo, System.get_env("GITHUB_REPO")),
+        github_token: resolve_github_token_setting(settings.tracker.github_token, System.get_env("GITHUB_TOKEN")),
+        agent_name: resolve_agent_string_setting(settings.tracker.agent_name, System.get_env("AGENT_NAME")),
+        agent_workspace_root: resolve_agent_path_setting(settings.tracker.agent_workspace_root, System.get_env("AGENT_WORKSPACE_ROOT")),
+        agent_data_root: resolve_agent_path_setting(settings.tracker.agent_data_root, System.get_env("AGENT_DATA_ROOT")),
+        dry_run: resolve_dry_run_setting(settings.tracker.dry_run),
+        push_branch: resolve_push_branch_setting(settings.tracker.push_branch)
     }
 
     workspace = %{
@@ -391,6 +412,61 @@ defmodule SymphonyElixir.Config.Schema do
 
     %{settings | tracker: tracker, workspace: workspace, codex: codex}
   end
+
+  # Resolve GitHub repo: supports both raw value and $GITHUB_REPO env reference
+  defp resolve_github_setting(nil, fallback), do: normalize_string_value(fallback)
+  defp resolve_github_setting(value, fallback) when is_binary(value),
+    do: resolve_string_setting(value, fallback)
+
+  # Resolve GitHub token: similar pattern to api_key resolution
+  defp resolve_github_token_setting(nil, fallback), do: resolve_secret_setting(nil, fallback)
+  defp resolve_github_token_setting(value, fallback) when is_binary(value),
+    do: resolve_secret_setting(value, fallback)
+
+  # Resolve agent name string (non-secret, just resolve env reference)
+  defp resolve_agent_string_setting(nil, fallback), do: normalize_string_value(fallback) || "hermes"
+  defp resolve_agent_string_setting(value, fallback) when is_binary(value),
+    do: resolve_string_setting(value, fallback) || "hermes"
+
+  # Resolve agent paths (support $ENV_VAR syntax)
+  defp resolve_agent_path_setting(nil, fallback), do: resolve_path_value(fallback, "/models-ssd/agent-sandboxes")
+  defp resolve_agent_path_setting(value, fallback) when is_binary(value),
+    do: resolve_path_value(value, fallback)
+
+  # Resolve dry_run from $AGENT_DRY_RUN env var (string "true"/"false")
+  defp resolve_dry_run_setting(nil) do
+    env_val = System.get_env("AGENT_DRY_RUN", "false")
+    String.downcase(env_val) in ["true", "1", "yes"]
+  end
+  defp resolve_dry_run_setting(value) when is_boolean(value), do: value
+  defp resolve_dry_run_setting(value) when is_binary(value),
+    do: String.downcase(value) in ["true", "1", "yes"]
+
+  # Resolve push_branch from $AGENT_PUSH_BRANCH env var (string "true"/"false")
+  # Default is always false — push must be explicitly enabled.
+  defp resolve_push_branch_setting(nil) do
+    env_val = System.get_env("AGENT_PUSH_BRANCH", "false")
+    String.downcase(env_val) in ["true", "1", "yes"]
+  end
+  defp resolve_push_branch_setting(value) when is_boolean(value), do: value
+  defp resolve_push_branch_setting(value) when is_binary(value),
+    do: String.downcase(value) in ["true", "1", "yes"]
+
+  defp resolve_string_setting(value, fallback) do
+    case env_reference_name(value) do
+      {:ok, env_name} ->
+        case System.get_env(env_name) do
+          nil -> fallback
+          "" -> nil
+          env_value -> env_value
+        end
+      :error -> value
+    end
+  end
+
+  defp normalize_string_value(nil), do: nil
+  defp normalize_string_value(""), do: nil
+  defp normalize_string_value(value) when is_binary(value), do: String.trim(value)
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->

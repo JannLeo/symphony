@@ -1,42 +1,87 @@
 ---
 tracker:
-  kind: linear
-  project_slug: "symphony-0c79b11b75ea"
+  kind: github
+  github_repo: "JannLeo/jannserver"
+  github_token: "$GITHUB_TOKEN"
+  agent_name: "hermes-server"
+  agent_workspace_root: "/models-ssd/agent-sandboxes"
+  agent_data_root: "/models-ssd/agent-data"
+  dry_run: true
+  push_branch: false
+  active_states: ["open"]
+  required_labels: []
+  terminal_states: ["closed"]
+polling:
+  interval_ms: 15000
+
+hooks:
+  after_create: "git clone --depth 1 https://github.com/openai/symphony .\ncd elixir && mise trust\nmise exec -- mix deps.get"
+  before_remove: "cd elixir && mise exec -- mix workspace.before_remove"
+
+---
+
+# ─────────────────────────────────────────────────────────────────
+# GitHub Issues mode (Phase 1 dry-run / no-op)
+# Copy the tracker block below into the YAML front matter above
+# (replacing the existing tracker: section). All fields can also be set
+# via environment variables:
+#   GITHUB_REPO, GITHUB_TOKEN, AGENT_NAME,
+#   AGENT_WORKSPACE_ROOT, AGENT_DATA_ROOT, AGENT_DRY_RUN, AGENT_PUSH_BRANCH
+#
+# GitHub Issues filtering:
+#   - repo: github_repo (e.g. JannLeo/jannserver)
+#   - state: open only
+#   - must have label: agent-ready
+#   - must NOT have: agent-running | agent-blocked | agent-done | agent-failed
+#
+# Phase 1 dry-run flow (AGENT_DRY_RUN=true):
+#   1. Discover issue with label=agent-ready
+#   2. Claim: add agent-running + remove agent-ready + write claim comment
+#   3. Create git worktree at agent_workspace_root/<branch_name>
+#   4. Create DATA_DIR at agent_data_root/<branch_name>
+#   5. Run dry-run checks (git status, node --version, pnpm --version)
+#   6. Write result comment (dryRun=true, pushed=false)
+#   7. NO Codex execution, NO code changes, NO PR creation
+#
+# IMPORTANT: active_states must be ["open"] for GitHub mode so the
+# orchestrator recognises "open" issues as active.
+#
+# Safety switch AGENT_PUSH_BRANCH (default: false):
+#   - dry_run=true  → NEVER push to remote (worktree stays local)
+#   - push_branch=false → NEVER push, even in real mode
+#   - push_branch=true + dry_run=false → push agent/<name>/issue-<N> branch
+#   - main/master push → always blocked
+# ─────────────────────────────────────────────────────────────────
+
+## GitHub Issues Tracker Config
+
+To use GitHub Issues mode, replace the `tracker:` block in the WORKFLOW.md front matter with:
+
+```yaml
+tracker:
+  kind: github
+  github_repo: "JannLeo/jannserver"
+  github_token: "$GITHUB_TOKEN"   # resolved from $GITHUB_TOKEN env var
   required_labels: []
   active_states:
-    - Todo
-    - In Progress
-    - Merging
-    - Rework
+    - open
   terminal_states:
-    - Closed
-    - Cancelled
-    - Canceled
-    - Duplicate
-    - Done
-polling:
-  interval_ms: 5000
-workspace:
-  root: ~/code/symphony-workspaces
-hooks:
-  after_create: |
-    git clone --depth 1 https://github.com/openai/symphony .
-    if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
-    fi
-  before_remove: |
-    cd elixir && mise exec -- mix workspace.before_remove
-agent:
-  max_concurrent_agents: 10
-  max_turns: 20
-codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-    networkAccess: true
----
+    - closed
+  agent_name: "hermes"
+  agent_workspace_root: "/models-ssd/agent-sandboxes"
+  agent_data_root: "/models-ssd/agent-data"
+  dry_run: true
+  push_branch: false   # default false — must be explicitly enabled to push
+```
+
+Set required env vars before running symphony:
+```bash
+export GITHUB_TOKEN=ghp_...       # your GitHub PAT
+export GITHUB_REPO=JannLeo/jannserver
+export AGENT_DRY_RUN=true         # dry-run mode (Phase 1)
+export AGENT_PUSH_BRANCH=false    # default false — only enable to push agent branches
+mix phx.server
+```
 
 You are working on a Linear ticket `{{ issue.identifier }}`
 

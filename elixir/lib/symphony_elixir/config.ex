@@ -51,12 +51,12 @@ defmodule SymphonyElixir.Config do
   @spec max_concurrent_agents_for_state(term()) :: pos_integer()
   def max_concurrent_agents_for_state(state_name) when is_binary(state_name) do
     config = settings!()
-
-    Map.get(
+    limit = Map.get(
       config.agent.max_concurrent_agents_by_state,
       Schema.normalize_issue_state(state_name),
       config.agent.max_concurrent_agents
     )
+    limit
   end
 
   def max_concurrent_agents_for_state(_state_name), do: settings!().agent.max_concurrent_agents
@@ -119,7 +119,7 @@ defmodule SymphonyElixir.Config do
       is_nil(settings.tracker.kind) ->
         {:error, :missing_tracker_kind}
 
-      settings.tracker.kind not in ["linear", "memory"] ->
+      settings.tracker.kind not in ["linear", "memory", "github"] ->
         {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
 
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
@@ -127,6 +127,12 @@ defmodule SymphonyElixir.Config do
 
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
         {:error, :missing_linear_project_slug}
+
+      settings.tracker.kind == "github" and not is_binary(settings.tracker.github_repo) ->
+        {:error, :missing_github_repo}
+
+      settings.tracker.kind == "github" and not is_binary(settings.tracker.github_token) ->
+        {:error, :missing_github_token}
 
       true ->
         :ok

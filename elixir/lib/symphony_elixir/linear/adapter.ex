@@ -77,6 +77,10 @@ defmodule SymphonyElixir.Linear.Adapter do
     Application.get_env(:symphony_elixir, :linear_client_module, Client)
   end
 
+  # Linear does not support the claim/label-based workflow; this is a no-op.
+  @spec claim_issue(String.t(), map()) :: :ok
+  def claim_issue(_issue_id, _metadata \\ %{}), do: :ok
+
   defp resolve_state_id(issue_id, state_name) do
     with {:ok, response} <-
            client_module().graphql(@state_lookup_query, %{issueId: issue_id, stateName: state_name}),
