@@ -55,6 +55,7 @@ defmodule SymphonyElixir.DryRunner do
 
     started_at = DateTime.utc_now()
     Logger.info("DryRunner: processing issue #{issue.identifier} branch=#{branch_name} workspace=#{workspace_path}")
+    IO.puts(:stderr, "[DRYRUNNER] START issue=#{issue.identifier} branch=#{branch_name}")
 
     claim_metadata = %{
       branch_name: branch_name,
@@ -65,6 +66,7 @@ defmodule SymphonyElixir.DryRunner do
     case Adapter.claim_issue(issue_id, claim_metadata) do
       :ok ->
         Logger.info("DryRunner: claimed issue #{issue_id}")
+        IO.puts(:stderr, "[DRYRUNNER] CLAIMED issue=#{issue_id} proceeding to worktree")
 
       {:error, :already_claimed} ->
         Logger.info("DryRunner: issue #{issue_id} already claimed — skipping")
@@ -92,15 +94,21 @@ defmodule SymphonyElixir.DryRunner do
     case create_worktree(issue_id, branch_name, workspace_path, data_path, repo, settings) do
       {:ok, worktree_info} ->
         Logger.info("DryRunner: worktree ready at #{workspace_path}")
+        IO.puts(:stderr, "[DRYRUNNER] WORKTREE OK issue=#{issue_id} path=#{workspace_path}")
 
         # Structural checks: git status, node, pnpm
-        dry_run_results = run_dry_run_checks(workspace_path)
+              IO.puts(:stderr, "[DRYRUNNER] RUNNING CHECKS for #{issue_id}")
+              dry_run_results = run_dry_run_checks(workspace_path)
+              IO.puts(:stderr, "[DRYRUNNER] CHECKS DONE #{issue_id}: #{inspect(dry_run_results)}")
 
-        # Phase 1.5: run smoke.sh if present
-        smoke_result = run_smoke_script(workspace_path, issue_id)
+              # Phase 1.5: run smoke.sh if present
+              IO.puts(:stderr, "[DRYRUNNER] RUNNING SMOKE for #{issue_id}")
+              smoke_result = run_smoke_script(workspace_path, issue_id)
+              IO.puts(:stderr, "[DRYRUNNER] SMOKE DONE #{issue_id}: #{inspect(smoke_result)}")
 
-        # Write result comment then update labels
-        result_comment = format_result_comment(
+              # Write result comment then update labels
+              IO.puts(:stderr, "[DRYRUNNER] WRITING COMMENT for #{issue_id}")
+              result_comment = format_result_comment(
           issue,
           branch_name,
           workspace_path,
@@ -160,15 +168,13 @@ defmodule SymphonyElixir.DryRunner do
         Logger.info("DryRunner: worktree already exists at #{worktree_dir}")
         {:ok, %{path: worktree_dir, existing: true, pushed: false, dry_run: true}}
       else
-        {output, exit_code} = System.cmd("git", ["clone", "--depth", "1", repo_url, worktree_dir],
-          stderr: true, into: []
-        )
+        {output, exit_code} = System.cmd("git", ["clone", "--depth", "1", repo_url, worktree_dir], into: [])
         Logger.debug("DryRunner: clone = exit=#{exit_code}")
 
         case exit_code do
           0 ->
             {out2, ec2} = System.cmd("git", ["checkout", "-b", branch_name],
-              cd: worktree_dir, stderr: true, into: []
+              cd: worktree_dir, into: []
             )
             Logger.debug("DryRunner: checkout branch = exit=#{ec2}")
 
@@ -214,7 +220,7 @@ defmodule SymphonyElixir.DryRunner do
 
       true ->
         case System.cmd("git", ["push", "-u", "origin", branch_name],
-               cd: worktree_dir, stderr: true, into: []) do
+               cd: worktree_dir, into: []) do
           {_output, 0} ->
             Logger.info("DryRunner: pushed branch '#{branch_name}' to origin")
             true
@@ -239,7 +245,7 @@ defmodule SymphonyElixir.DryRunner do
   end
 
   defp run_git_status(workspace_path) do
-    case System.cmd("git", ["status", "--short"], cd: workspace_path, stderr: true, into: []) do
+    case System.cmd("git", ["status", "--short"], cd: workspace_path, into: []) do
       {output, 0} when output in [nil, "", []] -> {:ok, "clean"}
       {output, 0} -> {:ok, output |> to_string() |> String.trim()}
       {_, code} -> {:error, "git status failed: exit=#{code}"}
@@ -250,7 +256,7 @@ defmodule SymphonyElixir.DryRunner do
     case System.find_executable(cmd) do
       nil -> {:not_found, "#{cmd} not found on PATH"}
       _ ->
-        case System.cmd(cmd, args, cd: workspace_path, stderr: true, into: []) do
+        case System.cmd(cmd, args, cd: workspace_path, into: []) do
           {output, 0} -> {:ok, output |> to_string() |> String.trim()}
           {_, code} -> {:error, "#{cmd} failed: exit=#{code}"}
         end
@@ -306,7 +312,7 @@ defmodule SymphonyElixir.DryRunner do
 
     task = Task.async(fn ->
       {output, exit_code} = System.cmd("bash", [script],
-        cd: workspace_path, stderr: true
+        cd: workspace_path, into: []
       )
       {output, exit_code}
     end)

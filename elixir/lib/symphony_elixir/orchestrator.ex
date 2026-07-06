@@ -69,6 +69,12 @@ defmodule SymphonyElixir.Orchestrator do
 
     run_terminal_workspace_cleanup()
     Logger.info("=== Orchestrator init complete, starting tick scheduler ===")
+
+    # Reset any stale agent-running issues left from a previous crashed container.
+    # This ensures fresh container starts can see and re-dispatch orphaned issues.
+    reset_result = SymphonyElixir.GitHubIssues.Adapter.reset_orphaned_running_issues()
+    IO.puts(:stderr, "[ORCHESTRATOR] reset #{elem(reset_result, 0)} stale agent-running issues (ok=#{elem(reset_result, 1)})")
+
     state = schedule_tick(state, 0)
 
     {:ok, state}
@@ -111,34 +117,47 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info(:run_poll_cycle, state) do
-    Logger.debug("run_poll_cycle: starting poll cycle (running=#{map_size(state.running)} claimed=#{MapSet.size(state.claimed)})")
-    state = refresh_runtime_config(state)
-    state = maybe_dispatch(state)
-    state = schedule_tick(state, state.poll_interval_ms)
-    state = %{state | poll_check_in_progress: false}
+    try do
+      Logger.debug("run_poll_cycle: starting poll cycle (running=#{map_size(state.running)} claimed=#{MapSet.size(state.claimed)})")
+      state = refresh_runtime_config(state)
+      state = maybe_dispatch(state)
+      state = schedule_tick(state, state.poll_interval_ms)
+      state = %{state | poll_check_in_progress: false}
 
-    notify_dashboard()
-    {:noreply, state}
+      notify_dashboard()
+      {:noreply, state}
+    rescue
+      e ->
+        Logger.error("run_poll_cycle crashed: #{Exception.message(e)} #{Exception.format_stacktrace(__STACKTRACE__)}")
+        state = %{state | poll_check_in_progress: false}
+        {:noreply, state}
+    end
   end
 
   def handle_info(
         {:DOWN, ref, :process, _pid, reason},
         %{running: running} = state
       ) do
-    case find_issue_id_for_ref(running, ref) do
-      nil ->
-        {:noreply, state}
+    try do
+      case find_issue_id_for_ref(running, ref) do
+        nil ->
+          {:noreply, state}
 
-      issue_id ->
-        {running_entry, state} = pop_running_entry(state, issue_id)
-        state = record_session_completion_totals(state, running_entry)
-        session_id = running_entry_session_id(running_entry)
+        issue_id ->
+          {running_entry, state} = pop_running_entry(state, issue_id)
+          state = record_session_completion_totals(state, running_entry)
+          session_id = running_entry_session_id(running_entry)
 
-        state = handle_agent_down(reason, state, issue_id, running_entry, session_id)
+          state = handle_agent_down(reason, state, issue_id, running_entry, session_id)
 
-        Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
+          Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
 
-        notify_dashboard()
+          notify_dashboard()
+          {:noreply, state}
+      end
+    rescue
+      e ->
+        Logger.error("handle_info :DOWN crashed: #{Exception.message(e)}, stacktrace: #{Exception.format_stacktrace(__STACKTRACE__)}")
         {:noreply, state}
     end
   end
@@ -240,7 +259,9 @@ defmodule SymphonyElixir.Orchestrator do
 
     next_attempt = next_retry_attempt_from_running(running_entry)
 
-    schedule_issue_retry(state, issue_id, next_attempt, %{
+    state
+    |> complete_issue(issue_id)
+    |> schedule_issue_retry(issue_id, next_attempt, %{
       identifier: running_entry.identifier,
       issue_url: running_entry.issue.url,
       error: "agent exited: #{inspect(reason)}",
@@ -251,6 +272,11 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_dispatch(%State{} = state) do
     IO.puts(:stderr, "[DISPATCH DEBUG] maybe_dispatch called")
+
+    # Reconcile stale agent-running issues from previous crashed containers (defense-in-depth).
+    {count, ok} = SymphonyElixir.GitHubIssues.Adapter.reset_orphaned_running_issues()
+    if count > 0, do: IO.puts(:stderr, "[DISPATCH] reconciled #{count} stale issues (ok=#{ok})")
+
     state =
       state
       |> reconcile_running_issues()
@@ -830,14 +856,19 @@ defmodule SymphonyElixir.Orchestrator do
          terminal_states
        )
        when is_map(issue) do
-    candidate_issue?(issue, active_states, terminal_states) and
-      !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
-      !MapSet.member?(claimed, issue.id) and
-      !Map.has_key?(running, issue.id) and
-      !Map.has_key?(blocked, issue.id) and
-      available_slots(state) > 0 and
-      state_slots_available?(issue, running) and
-      worker_slots_available?(state)
+    reason = cond do
+      not candidate_issue?(issue, active_states, terminal_states) -> "not candidate"
+      todo_issue_blocked_by_non_terminal?(issue, terminal_states) -> "blocked"
+      MapSet.member?(claimed, issue.id) -> "already claimed"
+      Map.has_key?(running, issue.id) -> "already running"
+      Map.has_key?(blocked, issue.id) -> "blocked map"
+      available_slots(state) <= 0 -> "no slots"
+      not state_slots_available?(issue, running) -> "state slots unavailable"
+      not worker_slots_available?(state) -> "worker slots unavailable"
+      true -> "OK"
+    end
+    if reason != "OK", do: IO.puts(:stderr, "[DISPATCH] skip #{issue.id}: #{reason}")
+    reason == "OK"
   end
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
@@ -980,6 +1011,7 @@ defmodule SymphonyElixir.Orchestrator do
         ref = Process.monitor(pid)
 
         Logger.info("Dispatching issue to #{runner_type}: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+    IO.puts(:stderr, "[DISPATCH] SPAWNED #{runner_type} for #{issue.id} pid=#{inspect(pid)}")
 
         running =
           Map.put(state.running, issue.id, %{
@@ -1035,8 +1067,8 @@ defmodule SymphonyElixir.Orchestrator do
     settings = Config.settings!()
 
     cond do
-      settings.tracker.kind == "github" and settings.tracker.dry_run ->
-        # Phase 1 dry-run: claim + worktree + dry-run checks, no Codex
+      settings.tracker.kind == "github" ->
+        # GitHub Issues always use DryRunner (handles both dry-run and real mode)
         run_result = Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
           try do
             DryRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)

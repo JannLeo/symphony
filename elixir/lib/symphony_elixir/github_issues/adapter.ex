@@ -232,4 +232,39 @@ defmodule SymphonyElixir.GitHubIssues.Adapter do
 
     :ok
   end
+
+  @doc """
+  On startup or poll cycle, detect issues stuck with `agent-running` label
+  from previous crashed containers. Reset them to `agent-ready` so they
+  can be picked up again.
+  """
+  @spec reset_orphaned_running_issues() :: {non_neg_integer(), non_neg_integer()}
+  def reset_orphaned_running_issues do
+    settings = Config.settings!()
+    token = settings.tracker.github_token
+    repo = settings.tracker.github_repo
+
+    case Client.list_issues_with_labels(token, repo, [@label_agent_running]) do
+      {:ok, []} ->
+        {0, 0}
+
+      {:ok, issues} ->
+        count = length(issues)
+        Logger.warning("GitHub: found #{count} stale issues with #{@label_agent_running} label — resetting to #{@label_agent_ready}")
+
+        successes =
+          Enum.count(issues, fn gh_issue ->
+            issue_id = to_string(gh_issue["number"])
+
+            :ok == Client.remove_label(token, repo, issue_id, @label_agent_running) and
+              match?({:ok, _}, Client.add_labels(token, repo, issue_id, [@label_agent_ready]))
+          end)
+
+        {count, successes}
+
+      {:error, reason} ->
+        Logger.error("GitHub: failed to fetch stale #{@label_agent_running} issues: #{inspect(reason)}")
+        {0, 0}
+    end
+  end
 end
