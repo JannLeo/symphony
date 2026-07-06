@@ -45,9 +45,6 @@ defmodule SymphonyElixir.GitHubIssues.Adapter do
     token = settings.tracker.github_token
     repo = settings.tracker.github_repo
 
-    # Write debug to file (survives LiveDashboard overwriting)
-    :ok = File.write("/tmp/symphony_debug.txt", "fetch_candidate_issues: token=#{if is_binary(token), do: "SET(#{byte_size(token)} chars)", else: "NIL"} repo=#{repo}\n", [:append])
-
     case Client.list_issues_with_labels(token, repo, [@label_agent_ready]) do
       {:ok, github_issues} ->
         issues = github_issues

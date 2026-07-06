@@ -442,8 +442,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
-
   defp reconcile_blocked_issue_states([], state, _active_states, _terminal_states), do: state
 
   defp reconcile_blocked_issue_states([issue | rest], state, active_states, terminal_states) do
@@ -474,8 +472,6 @@ defmodule SymphonyElixir.Orchestrator do
         release_issue_claim(state, issue.id)
     end
   end
-
-  defp reconcile_blocked_issue_state(_issue, state, _active_states, _terminal_states), do: state
 
   defp reconcile_missing_running_issue_ids(%State{} = state, requested_issue_ids, issues)
        when is_list(requested_issue_ids) and is_list(issues) do
@@ -779,32 +775,26 @@ defmodule SymphonyElixir.Orchestrator do
   defp choose_issues(issues, state) do
     active_states = active_state_set()
     terminal_states = terminal_state_set()
-
-    IO.puts("DEBUG: choose_issues called with #{length(issues)} issues")
-    issues
-    |> sort_issues_for_dispatch()
-    |> Enum.reduce(state, fn issue, state_acc ->
-      IO.puts("DEBUG: checking issue #{issue.id}: #{issue.title}")
+    sorted = sort_issues_for_dispatch(issues)
+    Enum.reduce(sorted, state, fn issue, state_acc ->
       if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
-        IO.puts("DEBUG: -> ISSUE #{issue.id} PASSES should_dispatch?")
         dispatch_issue(state_acc, issue)
       else
-        IO.puts("DEBUG: -> ISSUE #{issue.id} SKIPPED (candidate=#{candidate_issue?(issue, active_states, terminal_states)} state_slots=#{state_slots_available?(issue, state_acc.running)})")
         state_acc
       end
     end)
   end
 
   defp sort_issues_for_dispatch(issues) when is_list(issues) do
-    issues
+    sorted = issues
     |> Enum.sort_by(fn
       issue when is_map(issue) ->
-        IO.puts("DEBUG: sort_issues_for_dispatch called, issue id=#{issue.id} state=#{issue.state}")
         {priority_rank(issue.priority), issue_created_at_sort_key(issue), issue.identifier || ""}
 
-      _ ->
+      _other ->
         {priority_rank(nil), issue_created_at_sort_key(nil), ""}
     end)
+    sorted
   end
 
   defp priority_rank(priority) when is_integer(priority) and priority in 1..4, do: priority
@@ -1047,27 +1037,30 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, Exception.message(error)}
   end
 
-  defp revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_states) do
+  defp revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_states)
+       when is_function(issue_fetcher, 1) do
     issue_id = issue.id
-    if is_binary(issue_id) and is_function(issue_fetcher, 1) do
-    case issue_fetcher.([issue_id]) do
-      {:ok, [refreshed_issue | _]} ->
-        if retry_candidate_issue?(refreshed_issue, terminal_states) do
-          {:ok, refreshed_issue}
-        else
-          {:skip, refreshed_issue}
-        end
+    if is_binary(issue_id) do
+      case issue_fetcher.([issue_id]) do
+        {:ok, [refreshed_issue | _]} ->
+          if retry_candidate_issue?(refreshed_issue, terminal_states) do
+            {:ok, refreshed_issue}
+          else
+            {:skip, refreshed_issue}
+          end
 
-      {:ok, []} ->
-        {:skip, :missing}
+        {:ok, []} ->
+          {:skip, :missing}
 
-      {:error, reason} ->
-        {:error, reason}
-    end
+        {:error, reason} ->
+          {:error, reason}
       end
+    else
+      {:error, :invalid_issue_id}
     end
+  end
 
-    defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states) do
+  defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states) do
     if is_binary(issue.id) do
       {:ok, issue}
     else
@@ -1162,7 +1155,8 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp handle_retry_issue_lookup(issue, state, issue_id, attempt, metadata) do
+  defp handle_retry_issue_lookup(issue, state, issue_id, attempt, metadata)
+       when is_map(issue) do
     terminal_states = terminal_state_set()
 
     cond do
