@@ -68,6 +68,7 @@ defmodule SymphonyElixir.Orchestrator do
     }
 
     run_terminal_workspace_cleanup()
+    Logger.info("=== Orchestrator init complete, starting tick scheduler ===")
     state = schedule_tick(state, 0)
 
     {:ok, state}
@@ -110,6 +111,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info(:run_poll_cycle, state) do
+    Logger.debug("run_poll_cycle: starting poll cycle (running=#{map_size(state.running)} claimed=#{MapSet.size(state.claimed)})")
     state = refresh_runtime_config(state)
     state = maybe_dispatch(state)
     state = schedule_tick(state, state.poll_interval_ms)
@@ -248,17 +250,24 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_dispatch(%State{} = state) do
+    IO.puts(:stderr, "[DISPATCH DEBUG] maybe_dispatch called")
     state =
       state
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
 
-    with :ok <- Config.validate!(),
+    IO.puts(:stderr, "[DISPATCH DEBUG] after reconcile: available=#{available_slots(state)}")
+    IO.puts(:stderr, "[DISPATCH DEBUG] calling Config.validate!()...")
+    config_result = Config.validate!()
+    IO.puts(:stderr, "[DISPATCH DEBUG] Config.validate!() => #{inspect(config_result)}")
+    with :ok <- config_result,
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0 do
+      IO.puts(:stderr, "[DISPATCH DEBUG] choosing #{length(issues)} issues (slots ok)")
       choose_issues(issues, state)
     else
       {:error, :missing_linear_api_token} ->
+        IO.puts(:stderr, "[DISPATCH DEBUG] error: missing_linear_api_token")
         Logger.error("Linear API token missing in WORKFLOW.md")
         state
 
@@ -304,9 +313,14 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
         state
 
-      false ->
+      unmatched ->
+        IO.puts(:stderr, "[DISPATCH ERROR] unmatched with result: #{inspect(unmatched)}")
         state
     end
+  rescue
+    e ->
+      IO.puts(:stderr, "[DISPATCH ERROR] with clause crashed: #{inspect(e)}")
+      state
   end
 
   defp reconcile_running_issues(%State{} = state) do
@@ -776,8 +790,10 @@ defmodule SymphonyElixir.Orchestrator do
     active_states = active_state_set()
     terminal_states = terminal_state_set()
     sorted = sort_issues_for_dispatch(issues)
+    Logger.info("choose_issues: #{length(sorted)} issues to evaluate (running=#{map_size(state.running)} claimed=#{MapSet.size(state.claimed)})")
     Enum.reduce(sorted, state, fn issue, state_acc ->
       if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
+        Logger.info("choose_issues: dispatching issue #{issue.identifier}")
         dispatch_issue(state_acc, issue)
       else
         state_acc
@@ -789,7 +805,7 @@ defmodule SymphonyElixir.Orchestrator do
     sorted = issues
     |> Enum.sort_by(fn
       issue when is_map(issue) ->
-        {priority_rank(issue.priority), issue_created_at_sort_key(issue), issue.identifier || ""}
+        {priority_rank(Map.get(issue, :priority)), issue_created_at_sort_key(issue), issue.identifier || ""}
 
       _other ->
         {priority_rank(nil), issue_created_at_sort_key(nil), ""}
@@ -868,13 +884,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp candidate_issue?(_issue, _active_states, _terminal_states), do: false
 
-  defp issue_routable?(issue) when is_map(issue) do
-    # Both Linear.Issue (assigned_to_worker: false) and GitHubIssues.Issue (assigned_to_worker: true)
-    # use Issue.routable?/2. GitHubIssues.Issue always returns true.
-    # Linear issues check assigned_to_worker.
-    # For safety, accept both via dynamic field access.
-    Issue.routable?(issue, Config.settings!().tracker.required_labels)
-  end
+  defp required_labels, do: Config.settings!().tracker.required_labels
+
+  # GitHub issues are controlled by labels (agent-ready/agent-running/agent-blocked),
+  # not by assignee - so always return true (the adapter already filters out
+  # agent-running/agent-blocked/agent-done/agent-failed issues).
+  defp issue_routable?(%SymphonyElixir.GitHubIssues.Issue{}), do: true
+  defp issue_routable?(%SymphonyElixir.Linear.Issue{} = issue),
+    do: SymphonyElixir.Linear.Issue.routable?(issue, required_labels())
 
   defp todo_issue_blocked_by_non_terminal?(
          issue,
@@ -1020,21 +1037,33 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       settings.tracker.kind == "github" and settings.tracker.dry_run ->
         # Phase 1 dry-run: claim + worktree + dry-run checks, no Codex
-        {:ok, pid} = Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-          DryRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+        run_result = Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+          try do
+            DryRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+          rescue
+            e ->
+              Logger.error("DryRunner crashed for issue #{issue.id}: #{inspect(e)}\n#{Exception.format_stacktrace(__STACKTRACE__)}")
+              {:error, Exception.message(e)}
+          end
         end)
-        {:ok, pid, "dry-runner"}
+
+        case run_result do
+          {:ok, pid} -> {:ok, pid, "dry-runner"}
+          {:error, reason} -> {:error, reason}
+        end
 
       true ->
-        {:ok, pid} = Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
-        end)
-        {:ok, pid, "agent-runner"}
+        end) do
+          {:ok, pid} -> {:ok, pid, "agent-runner"}
+          {:error, reason} -> {:error, reason}
+        end
     end
   rescue
-    # Returns {:error, reason} for non-retryable errors from DryRunner
-    error in [RuntimeError] ->
-      {:error, Exception.message(error)}
+    e ->
+      Logger.error("dispatch_runner exception: #{inspect(e)}\n#{Exception.format_stacktrace(__STACKTRACE__)}")
+      {:error, Exception.message(e)}
   end
 
   defp revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_states)
@@ -1196,19 +1225,24 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp run_terminal_workspace_cleanup do
-    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
-      {:ok, issues} ->
-        issues
-        |> Enum.each(fn
-          %Issue{identifier: identifier} when is_binary(identifier) ->
-            cleanup_issue_workspace(identifier)
+    try do
+      case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
+        {:ok, issues} ->
+          issues
+          |> Enum.each(fn
+            %Issue{identifier: identifier} when is_binary(identifier) ->
+              cleanup_issue_workspace(identifier)
 
-          _ ->
-            :ok
-        end)
+            _ ->
+              :ok
+          end)
 
-      {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+        {:error, reason} ->
+          Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+      end
+    rescue
+      e ->
+        Logger.error("run_terminal_workspace_cleanup CRASHED: #{inspect(e)}\n#{Exception.format_stacktrace(__STACKTRACE__)}")
     end
   end
 

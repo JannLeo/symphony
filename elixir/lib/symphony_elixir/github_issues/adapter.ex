@@ -44,9 +44,11 @@ defmodule SymphonyElixir.GitHubIssues.Adapter do
     settings = Config.settings!()
     token = settings.tracker.github_token
     repo = settings.tracker.github_repo
+    IO.puts(:stderr, "[GITHUB] fetch_candidate_issues token=#{if(token, do: "ok", else: "nil")} repo=#{inspect(repo)}")
 
     case Client.list_issues_with_labels(token, repo, [@label_agent_ready]) do
       {:ok, github_issues} ->
+        IO.puts(:stderr, "[GITHUB] got #{length(github_issues)} raw issues from API")
         issues = github_issues
         |> Enum.reject(fn issue ->
           # Reject issues that already have agent-running / agent-blocked / agent-done
@@ -55,13 +57,17 @@ defmodule SymphonyElixir.GitHubIssues.Adapter do
           has_blocked = @label_agent_blocked in labels
           has_done = @label_agent_done in labels
           has_failed = @label_agent_failed in labels
-          has_running or has_blocked or has_done or has_failed
+          reject = has_running or has_blocked or has_done or has_failed
+          if reject, do: IO.puts(:stderr, "[GITHUB] rejecting issue ##{issue["number"]} labels=#{inspect(labels)}")
+          reject
         end)
         |> Enum.map(fn gh -> Issue.from_github_map(gh, repo) end)
 
+        IO.puts(:stderr, "[GITHUB] after filter: #{length(issues)} candidate issues")
         {:ok, issues}
 
       {:error, reason} ->
+        IO.puts(:stderr, "[GITHUB] API error: #{inspect(reason)}")
         {:error, reason}
     end
   end
