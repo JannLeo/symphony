@@ -255,9 +255,18 @@ defmodule SymphonyElixir.GitHubIssues.Adapter do
         successes =
           Enum.count(issues, fn gh_issue ->
             issue_id = to_string(gh_issue["number"])
+            labels = for l <- gh_issue["labels"], do: l["name"]
 
-            :ok == Client.remove_label(token, repo, issue_id, @label_agent_running) and
-              match?({:ok, _}, Client.add_labels(token, repo, issue_id, [@label_agent_ready]))
+            # Skip issues already in a terminal state (e.g. from a smoke.sh that
+            # ran to completion in a crashed container — the terminal label was
+            # set before the container crashed and reset_orphaned picked it up).
+            if Enum.any?(labels, &(&1 in [@label_agent_failed, @label_agent_smoke_ok])) do
+              Logger.info("GitHub: skip reset of ##{issue_id} — already has terminal label")
+              false
+            else
+              :ok == Client.remove_label(token, repo, issue_id, @label_agent_running) and
+                match?({:ok, _}, Client.add_labels(token, repo, issue_id, [@label_agent_ready]))
+            end
           end)
 
         {count, successes}
